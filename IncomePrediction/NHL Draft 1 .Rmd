@@ -1,0 +1,312 @@
+---
+title: "NHL Draft 1"
+date: "March 28, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Part I of Report **(Insert here)
+```{r, include=FALSE, echo=FALSE}
+#clear variables
+rm(list=ls(all=TRUE))
+gc()
+#load relevant libraries
+loadPkg = function(x) { if (!require(x,character.only=T, quietly =T)) { install.packages(x,dep=T,repos="http://cran.us.r-project.org"); if(!require(x,character.only=T)) stop("Package not found") } }
+library(plyr)
+loadPkg("dplyr")
+loadPkg("Hmisc")
+library(stats)
+library("devtools")
+loadPkg("ggbiplot")
+loadPkg("leaps")
+```
+
+Part II: Load Datasets
+```{r echo=FALSE}
+#load dataset to train, removing NA and blank data, and deleting duplicates
+train1<-read.csv("NHL_train.csv",na.strings=c(""," ","NA"), check.names = FALSE,stringsAsFactors = TRUE)
+train2 <- train1[, !duplicated(colnames(train1))]
+train3<-data.frame(train2[complete.cases(train2),], stringsAsFactors = TRUE)
+train_prelim <- train3[!apply(is.na(train3) | train3 == "", 1, all),]
+#load testing dataset, removing NA and blank data
+test1<-read.csv("test.csv", header = T, na.strings=c(""," ","NA"), check.names = FALSE)
+test2 <- test1[, !duplicated(colnames(test1))]
+test3<-data.frame(test2[complete.cases(test2),], stringsAsFactors = TRUE)
+test_prelim<-test3[complete.cases(test3),]
+#Change birthdate column to birth year. Needed to make it numeric so I could add 1900, needed to turn it back into a factor so it could run the ANOVA. 
+train_prelim$Born = as.numeric(sub("-.*","",train_prelim$Born))
+train_prelim$Born = as.factor(train_prelim$Born+1900)
+test_prelim$Born = as.numeric(sub("-.*","",test_prelim$Born))
+test_prelim$Born = as.factor(test_prelim$Born+1900)
+#Select only first position listed since this is the one that is provided by NHL.com
+train_prelim$Position = as.factor(sub("/.*","",train_prelim$Position))
+test_prelim$Position =as.factor(sub("/.*","",test_prelim$Position))
+#Currently have 143 variables and would like to narrow this down by using only the variables that are highly correlated to the variable to be predicted, salary. 
+#Since we have both numeric and non-numeric variables, we need to split them up to do the correlation. 
+train_prelim_nonum<-train_prelim[,1:grep("Salary", colnames(train_prelim))]
+train_prelim_numeric<-train_prelim[,grep("Salary", colnames(train_prelim)):ncol(train_prelim)]
+#Delete duplicate column names
+```
+
+#Part III: Preparing the Data
+##Part IIIA: Numeric Data: Pearson Correlation
+
+```{r echo=FALSE}
+#Use the rcorr function to create a matrix of the corrlation value (r) and p values (p)
+#use Pearson correlation for the numeric data since we do not have any ordinal variables. 
+cor_p <- rcorr(as.matrix(train_prelim_numeric), type="pearson")
+#Create matrix 'p' that is only the correlation values and p-vlaues between the variables and salary (not including salary)
+p<-cbind(cor_p$r[2:nrow(cor_p$r),1,drop=FALSE],cor_p$P[2:nrow(cor_p$P),1,drop=FALSE])
+colnames(p)<-c("Pearson Sal. Corr.", "p value")
+#made a list of only those numeric variables who correlation p-values are <.05, and whose correlation values are greater than 0.5
+p[p[,2]<.50,] 
+vp<-p[abs(p[,1])>.6,]
+vp
+#From this final list of 53 variables, we look at the variable definitions and remove the redundant variables. Need to transpose vp so that the variables are column names
+#vp1<-subset(data.frame(t(vp), header = T), select = -c())
+```
+
+##Part IIIB: Non-Numeric Data: ANOVA
+
+```{r echo=FALSE}
+#Need to run anova for salary according to each variable (school, country, etc.) to see if there is a significant statistical difference present between the salaries of each group. A significant statistical difference will indicate that the variable does affect player salary. 
+#Our null hypothesis for the ANOVA is that the average salary among each of the variable groupings are equal (no relationship between the variable and salary). Alternative hypothesis is that not all average salaries are equal (there is a relationship between the variable and salary)
+
+## ANOVA test seems to be suitable choice to numeric variable. (Chandra)
+
+#Here we use 'cbind' on the dependant variables which results in seperate anova models being run
+formula <- as.formula(paste0("cbind(", paste(names(train_prelim_nonum)[-11], collapse = ","), ") ~ Salary"))
+#Run the anova for each dependant variable
+fit <- aov(lm(formula, data=train_prelim_nonum))
+#Summary of the ANOVA
+f<-summary(fit)
+#Print the summary
+f
+#now, we need to pull out the F statistic and p-value for each variable. 
+#set a blank vector the length of f for each
+pv<- vector(mode = "list", length = length(f))
+fs<-vector(mode = "list", length = length(f))
+#pull out F and the p value for each variable and populate g
+for (i in 1:length(f)) {
+  pv[i]<-summary(fit)[[i]][["Pr(>F)"]]
+  fs[i]<-summary(fit)[[i]][["F value"]]
+}
+nonum<-data.frame(cbind(pv,fs))
+rownames(nonum)<-c(colnames(train_prelim_nonum[-11]))
+#The variables with a p-value of <.05 will be used in the predictive model. As we can see in the results from the line below, there is 1 non-numeric variable who has a p-value of <.05. The F statistic for this variable is much higher than 1, which is a good sign. If the F statistic was close to 1, this would mean that the null hypothesis is true. 
+nonum_var<-nonum[nonum[,1]<.05,] 
+
+#box plot to visualize data for each variable
+for (i in 1:(ncol(train_prelim_nonum)-1)) {
+  bp2<-ggplot(train_prelim_nonum, aes_string(x = (as.name(colnames(train_prelim_nonum[i]))), y = "Salary"))+
+  geom_boxplot(fill = "grey80", colour = "blue") +
+  scale_x_discrete() + xlab(colnames(train_prelim_nonum[i])) +
+  ylab("Salary") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle(colnames(train_prelim_nonum[i]))
+  print(bp2)
+}
+
+```
+##Part IIIC: Creating the master data.frames
+
+```{r  echo=FALSE}
+
+#Now we create data frames that consist only of the variables that were found to be relevant in parts A and B
+NHL_Train<-select(train_prelim, Salary, row.names(vp), row.names(nonum_var))
+NHL_Test<-select(test_prelim, Salary, row.names(vp), row.names(nonum_var))
+
+
+```
+#Part IV: EDA 
+
+```{r echo=FALSE}
+
+
+
+
+```
+#Part V: Predicting the model
+
+```{r}
+#First, we use "forward" method to pick out variables in "train"" dataset, since "forward" can not apply to categorical variable, we select the numerical variables at first to build the model.
+NHL_Train_Num<-NHL_Train[,1:27]
+
+#Conduct "forward" method on numerical variables.
+reg.forward <- regsubsets(Salary~., data = NHL_Train_Num, nvmax =27, nbest = 1, method = "forward")
+summary(reg.forward)
+
+#Use R^2 to determine how fit the model is 
+plot(reg.forward, scale = "adjr2", main = "Adjusted R^2")
+
+
+#See which model has the highest adjusted R^2
+which.max(summary(reg.forward)$adjr2)
+summary(reg.forward)$which[25,]
+
+#According to the results, the best model contains 25 variables, do regression with the best model
+best.model <- lm(Salary ~ A+A1+A2+TOI+TOIX+TOI.GP+iCF+iFF+iSF+iMiss+Wide+CF+FF+SF+xGF+SCF+GF+RBF+DSF+FOW+FOL+OPS+PS+GS+GS.G, data = NHL_Train_Num)
+summary(best.model)
+
+#For categorical variable, "exhausive" model search can accept it
+age<-regsubsets(Salary~Born,data=NHL_Train, method="exhaustive")
+summary(age)
+#According to the results, we can find out the players born in 1985 might have higer salaries than others.
+
+```
+
+Try other methods like "backward", "seqrep", etc. and include all variables.
+```{r}
+#best
+reg.best <- regsubsets(Salary ~., data = NHL_Train, nvmax = 27)
+plot(reg.best, scale = "adjr2", main = "Adjusted R^2")
+#apply the "bic","Cp","adjr2","r2"
+plot(reg.best, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.best, scale = "bic", main = "BIC")
+plot(reg.best, scale = "Cp", main = "Cp")
+summary(reg.best)
+
+```
+
+```{r}
+#backward
+reg.back <- regsubsets(Salary ~., data = NHL_Train, method = "backward", nbest = 1, nvmax = 27)
+plot(reg.back, scale = "adjr2", main = "Adjusted R^2")
+#apply the "bic","Cp","adjr2","r2"
+plot(reg.back, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.back, scale = "bic", main = "BIC")
+plot(reg.back, scale = "Cp", main = "Cp")
+summary(reg.back)
+```
+
+```{r}
+#seqrep
+reg.seqrep <- regsubsets(Salary ~., data = NHL_Train, method = "seqrep", nbest = 1, nvmax = 27)
+plot(reg.seqrep, scale = "adjr2", main = "Adjusted R^2")
+#apply the "bic","Cp","adjr2","r2"
+plot(reg.seqrep, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.seqrep, scale = "bic", main = "BIC")
+plot(reg.seqrep, scale = "Cp", main = "Cp")
+summary(reg.seqrep)
+```
+
+Variables "Born", "GF", "PTS", "TOI.GP" seemed to be better choice in the model
+```{r}
+#build a model
+model1 <- glm( Salary ~ GF+PTS+TOI.GP+Born, data = NHL_Train)
+summary(model1)
+```
+
+Also try the kNN, but the results were wired, maybe the variables I choose were not appropriate, maybe we should disscuss this part. If we have done so, then the code part is easy to change. There are some invalid values in the former data sets that I could not use them to do kNN analysis, so I chose the original data sets. 
+```{r}
+loadPkg("leaps")
+NHL_test <- read.csv("test.csv")
+NHL_train <- read.csv("NHL_train.csv")
+head(NHL_test)
+head(NHL_train)
+```
+
+```{r}
+loadPkg("class")
+library(class)
+NHL_train[is.na(NHL_train)]=0
+NHL_test[is.na(NHL_test)]=0
+set.seed(1)
+NHL_3NN = knn(train = NHL_train[,c("PTS", "TOI.GP", "GF")],
+              test = NHL_test[,c("PTS", "TOI.GP", "GF")],
+              cl = NHL_train[,"Salary"],
+              k = 3,
+              use.all = TRUE)
+str(NHL_3NN)
+length(NHL_3NN)
+```
+
+```{r}
+#take a look at the confusion matrix by combining the predictions from bank_3NN to the original data set.
+kNN_res = table (NHL_3NN,
+                 NHL_test$Salary)
+
+# Select the true positives and true negatives by selecting
+# only the cells where the row and column names are the same.
+kNN_res[row(kNN_res) == col(kNN_res)]
+
+# Calculate the accuracy rate by dividing the correct classifications
+# by the total number of classifications.
+kNN_acc = sum(kNN_res[row(kNN_res) == col(kNN_res)]) / sum(kNN_res)
+kNN_acc
+
+```
+
+```{r}
+#selecting the correct "k"
+chooseK = function(k, train_set, val_set, train_class, val_class){
+  
+  # Build knn with k neighbors considered.
+  set.seed(1)
+  class_knn = knn(train = train_set,    
+                  test = val_set,       
+                  cl = train_class,     
+                  k = k,               
+                  use.all = TRUE)       
+                                        
+                                      
+  
+  tab = table(class_knn, val_class)
+  
+  # Calculate the accuracy.
+  accu = sum(tab[row(tab) == col(tab)]) / sum(tab)                         
+  cbind(k = k, accuracy = accu)
+}
+
+
+knn_different_k = sapply(seq(1, 25, by = 2),
+                         function(x) chooseK(x, 
+                                             train_set = NHL_train[,c("PTS", "TOI.GP", "GF")],
+                                             val_set = NHL_test[,c("PTS", "TOI.GP", "GF")],
+                                             train_class = NHL_train[,"Salary"],
+                                             val_class = NHL_test[,"Salary"]))
+
+# Reformat the results to graph the results.
+str(knn_different_k)
+knn_different_k = data.frame(k = knn_different_k[1,],
+                             accuracy = knn_different_k[2,])
+
+loadPkg("ggplot2")
+ggplot(knn_different_k,
+       aes(x = k, y = accuracy)) +
+  geom_line(color = "orange", size = 1.5) +
+  geom_point(size = 3)
+```
+
+We could see that 23-nearest neighbors is a good choice because that's the greatest improvement in predicting accuracy.
+
+```{r}
+#build a model
+model1 <- glm( Salary ~ GF+PTS+TOI.GP+Born, data = NHL_train)
+summary(model1)
+#calculate the AUC in our model
+loadPkg("ResourceSelection")
+hoslem.test(NHL_train$Salary, fitted(model1))
+loadPkg("pROC")
+prob=predict(model1, type = c("response"))
+NHL_train$prob=prob
+m <- roc(Salary~prob, data=NHL_train)
+auc(m)
+plot(m)#this figure is wired, may due to the choice of variables in this model.
+
+```
+
+
+```{r}
+fit1<-lm(Salary~ A+A1+A2+TOI+TOIX+TOI.GP+iCF+iFF+iSF+iMiss+Wide+CF+FF+SF+xGF+SCF+GF+RBF+DSF+FOW+FOL+OPS+PS+GS+GS.G, data=NHL_Train_Num)
+summary(fit1)
+plot(fit1)
+```
+```{r}
+library(pls)
+pcr.fit=pcr(Salary~.,data=NHL_Train_Num,scale=TRUE,validation='CV')
+names(pcr.fit)
+summary(pcr.fit)
+validationplot(pcr.fit)
+validationplot(pcr.fit,val.type='R2')
+```
